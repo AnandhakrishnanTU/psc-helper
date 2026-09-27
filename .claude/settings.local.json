@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(taskkill //F //PID 12992)",
+      "Bash(curl -sL -m 30 -A \"Mozilla/5.0\" -o /c/Users/268879/AppData/Local/Temp/claude/c--Users-268879-Desktop-personal-projects-psc-helper/2e9cf200-aa7a-40ae-9758-1638bca9d01d/scratchpad/notif.html -w \"%{http_code} %{url_effective} %{size_download}\\\\n\" https://www.keralapsc.gov.in/notifications)",
+      "Bash(cd /c/Users/268879/AppData/Local/Temp/claude/c--Users-268879-Desktop-personal-projects-psc-helper/2e9cf200-aa7a-40ae-9758-1638bca9d01d/scratchpad && grep -o '<title>[^<]*' notif.html; grep -n -i -E 'table|<tr|\\\\.pdf|category|last date' notif.html | head -60)",
+      "Read(//c/Users/268879/AppData/Local/Temp/claude/c--Users-268879-Desktop-personal-projects-psc-helper/2e9cf200-aa7a-40ae-9758-1638bca9d01d/scratchpad/**)",
+      "Bash(curl -sL -m 30 -A \"Mozilla/5.0\" -o gazette.html https://www.keralapsc.gov.in/extra-ordinary-gazette-date-31082026)"
+    ]
+  }
+}
