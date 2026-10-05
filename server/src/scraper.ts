@@ -14,6 +14,7 @@ export interface ScrapeResult {
   newJobs: string[]
   flagged: string[]
   errors: string[]
+  unfinished: boolean // ran out of time; the rest is picked up by the next run
 }
 
 const absolute = (href: string) => new URL(href, BASE).href.replace(/^http:/, 'https:')
@@ -60,23 +61,25 @@ export async function buildJob(link: { url: string; text: string }, gazette: { u
   }
 }
 
-async function scrapeGazette(gazette: { url: string; lastDate: string }, result: ScrapeResult) {
+async function scrapeGazette(gazette: { url: string; lastDate: string }, result: ScrapeResult, outOfTime: () => boolean) {
   const links = await getGazetteLinks(gazette.url)
   if (!links.length) {
     result.errors.push(`No notification PDFs found on ${gazette.url} (page layout may have changed)`)
     return
   }
+  const listed = new Set(links.map(link => parseTitle(link.text).categoryNo || link.url))
 
-  const listed = new Set<string>()
   for (const link of links) {
     const id = parseTitle(link.text).categoryNo || link.url
-    listed.add(id)
-    const existing = getJob(id)
+    const existing = await getJob(id)
 
     if (!existing) {
+      if (outOfTime()) {
+        result.unfinished = true
+        continue
+      }
       try {
-        insertJob(await buildJob(link, gazette))
-        result.newJobs.push(id)
+        if (await insertJob(await buildJob(link, gazette))) result.newJobs.push(id)
       } catch (err) {
         result.errors.push(`Could not read ${link.url}: ${err instanceof Error ? err.message : err}`)
       }
@@ -85,21 +88,21 @@ async function scrapeGazette(gazette: { url: string; lastDate: string }, result:
 
     const job = existing.job
     if (job.lastDate !== gazette.lastDate) {
-      addJobUpdate(id, 'extension', `Last date changed from ${formatDate(job.lastDate)} to ${formatDate(gazette.lastDate)}`)
-      updateJob({ ...job, lastDate: gazette.lastDate })
+      await addJobUpdate(id, 'extension', `Last date changed from ${formatDate(job.lastDate)} to ${formatDate(gazette.lastDate)}`)
+      await updateJob({ ...job, lastDate: gazette.lastDate })
     }
     if (job.notificationUrl !== link.url) {
       // Keep the admin-reviewed eligibility, but ask for a re-check
-      addJobUpdate(id, 'revised', 'PSC replaced the notification PDF', link.url)
-      updateJob({ ...getJob(id)!.job, notificationUrl: link.url })
-      flagJob(id, 'Notification PDF was replaced, re-check eligibility')
+      await addJobUpdate(id, 'revised', 'PSC replaced the notification PDF', link.url)
+      await updateJob({ ...job, lastDate: gazette.lastDate, notificationUrl: link.url })
+      await flagJob(id, 'Notification PDF was replaced, re-check eligibility')
       result.flagged.push(id)
     }
   }
 
-  for (const { job } of getJobsByGazette(gazette.url)) {
-    if (!listed.has(job.id) && addJobUpdate(job.id, 'removed', 'No longer listed on the PSC notification page')) {
-      flagJob(job.id, 'Removed from PSC notification page, may be withdrawn')
+  for (const { job } of await getJobsByGazette(gazette.url)) {
+    if (!listed.has(job.id) && await addJobUpdate(job.id, 'removed', 'No longer listed on the PSC notification page')) {
+      await flagJob(job.id, 'Removed from PSC notification page, may be withdrawn')
       result.flagged.push(job.id)
     }
   }
@@ -125,7 +128,7 @@ async function scrapeAddendumPage(result: ScrapeResult) {
   }
 
   const byKey = new Map<string, string>()
-  for (const { job, status } of listJobs('all')) {
+  for (const { job, status } of await listJobs('all')) {
     if (status !== 'rejected') for (const key of jobKeys(job.categoryNo)) byKey.set(key, job.id)
   }
 
@@ -133,7 +136,7 @@ async function scrapeAddendumPage(result: ScrapeResult) {
     const href = $(row).find('a').last().attr('href')
     if (!href) continue
     const url = absolute(href)
-    if (isUpdateSeen(url)) continue
+    if (await isUpdateSeen(url)) continue
 
     const title = $(row).find('td.views-field-title').text().replace(/\s+/g, ' ').trim()
     const body = $(row).find('td.views-field-body').text().replace(/\s+/g, ' ').trim()
@@ -141,42 +144,44 @@ async function scrapeAddendumPage(result: ScrapeResult) {
 
     for (const id of jobIds) {
       const kind = updateKind(`${title} ${body}`)
-      addJobUpdate(id, kind, title.slice(0, 300), url)
-      const record = getJob(id)!
+      await addJobUpdate(id, kind, title.slice(0, 300), url)
+      const record = (await getJob(id))!
       if (record.status === 'pending' || record.job.lastDate >= todayIST()) {
-        flagJob(id, `PSC published ${kind === 'erratum' || kind === 'addendum' ? 'an' : 'a'} ${kind}`)
+        await flagJob(id, `PSC published ${kind === 'erratum' || kind === 'addendum' ? 'an' : 'a'} ${kind}`)
         result.flagged.push(id)
       }
     }
-    markUpdateSeen(url)
+    await markUpdateSeen(url)
   }
 }
 
+const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
 /** Checks keralapsc.gov.in for new jobs and changes to known ones. Never throws. */
-export async function scrape(): Promise<ScrapeResult> {
-  const result: ScrapeResult = { newJobs: [], flagged: [], errors: [] }
+export async function scrape(outOfTime: () => boolean = () => false): Promise<ScrapeResult> {
+  const result: ScrapeResult = { newJobs: [], flagged: [], errors: [], unfinished: false }
 
   try {
     const gazettes = await getGazettes()
     if (!gazettes.length) result.errors.push('No gazettes found on the notifications page (page layout may have changed)')
     for (const gazette of gazettes.filter(g => g.lastDate >= todayIST())) {
       try {
-        await scrapeGazette(gazette, result)
+        await scrapeGazette(gazette, result, outOfTime)
       } catch (err) {
-        result.errors.push(`Gazette ${gazette.url} failed: ${err instanceof Error ? err.message : err}`)
+        result.errors.push(`Gazette ${gazette.url} failed: ${message(err)}`)
       }
     }
   } catch (err) {
-    result.errors.push(`Notifications page failed: ${err instanceof Error ? err.message : err}`)
+    result.errors.push(`Notifications page failed: ${message(err)}`)
   }
 
   try {
     await scrapeAddendumPage(result)
   } catch (err) {
-    result.errors.push(`Addendum/Erratum page failed: ${err instanceof Error ? err.message : err}`)
+    result.errors.push(`Addendum/Erratum page failed: ${message(err)}`)
   }
 
   result.flagged = [...new Set(result.flagged)]
-  log.info('Scrape finished', { newJobs: result.newJobs.length, flagged: result.flagged.length, errors: result.errors.length })
+  log.info('Scrape finished', { newJobs: result.newJobs.length, flagged: result.flagged.length, errors: result.errors.length, unfinished: result.unfinished })
   return result
 }

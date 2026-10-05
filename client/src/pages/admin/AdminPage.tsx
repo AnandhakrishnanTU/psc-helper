@@ -3,8 +3,9 @@ import { adminApi, ApiError } from '../../api'
 import type { AdminJob, AdminJobRecord, AdminSummary, JobStatus } from '../../types'
 import JobEditor from './JobEditor'
 
-const KEY = 'psc-helper-admin'
+const KEY = 'govjoli-admin'
 type Filter = 'review' | 'open' | 'all'
+type CheckResult = { skipped?: string; newJobs?: string[]; flagged?: string[]; errors?: string[]; unfinished?: boolean }
 
 const STATUS_LABEL: Record<JobStatus, string> = {
   pending: 'Waiting for review', approved: 'Live', rejected: 'Rejected', cancelled: 'Cancelled',
@@ -54,11 +55,11 @@ export default function AdminPage() {
     )
   }
 
-  async function act(label: string, action: () => Promise<unknown>) {
-    setMessage('')
+  async function act(label: string | ((result: never) => string), action: () => Promise<unknown>) {
+    setMessage('Working… this can take up to a few minutes.')
     try {
-      await action()
-      setMessage(label)
+      const result = await action()
+      setMessage(typeof label === 'string' ? label : label(result as never))
       await load()
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed')
@@ -73,7 +74,9 @@ export default function AdminPage() {
   const setStatus = async (id: string, status: JobStatus, job?: AdminJob) => {
     if (job) await adminApi.saveJob(password, job)
     await adminApi.setStatus(password, id, status)
-    setMessage(status === 'approved' ? 'Approved. Alerts go out in about 2 minutes.' : `Marked as ${STATUS_LABEL[status]}`)
+    setMessage(status === 'approved'
+      ? 'Approved. When you finish reviewing, press "Send alerts now" (otherwise they go out with the next check, within 3 hours).'
+      : `Marked as ${STATUS_LABEL[status]}`)
     setOpen(null)
     await load()
   }
@@ -105,9 +108,14 @@ export default function AdminPage() {
         {lastRun && !lastRun.ok && <span className="error"> Last check had errors: {lastRun.errors.join(' | ')}</span>}
       </p>
       <div className="actions">
-        <button onClick={() => act('PSC check started. Refresh in a few minutes.', () => adminApi.checkNow(password))}>Check PSC now</button>
-        <button className="secondary" onClick={() => act('Alerts sent', () => adminApi.sendAlertsNow(password))}>Send pending alerts now</button>
-        <button className="secondary" onClick={() => act('Backup downloaded', () => adminApi.downloadBackup(password))}>Download database backup</button>
+        <button onClick={() => act((r: CheckResult) => r.skipped
+          ? r.skipped
+          : `Check done: ${r.newJobs?.length ?? 0} new, ${r.flagged?.length ?? 0} flagged, ${r.errors?.length ?? 0} errors${r.unfinished ? ' (more next run)' : ''}.`,
+        () => adminApi.checkNow(password))}>Check PSC now</button>
+        <button onClick={() => act((r: { sent: number; unfinished: boolean }) =>
+          `Alerts sent to ${r.sent} subscriber(s)${r.unfinished ? '; the rest go out with the next check' : ''}.`,
+        () => adminApi.sendAlertsNow(password))}>Send alerts now</button>
+        <button className="secondary" onClick={() => act('Backup downloaded. Keep it somewhere safe (it contains user emails).', () => adminApi.downloadBackup(password))}>Download backup</button>
         <button className="secondary" onClick={() => void load()}>Refresh</button>
         <button className="secondary" onClick={() => { sessionStorage.removeItem(KEY); setLoggedIn(false); setPassword('') }}>Log out</button>
       </div>

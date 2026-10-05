@@ -4,3 +4,5 @@ dist/
 .env
 .cache/
 backups/
+.pgdata/
+.vercel/

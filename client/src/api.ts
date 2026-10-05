@@ -94,7 +94,7 @@ export const adminApi = {
     const res = await fetch('/api/admin/backup', { headers: { Authorization: `Bearer ${pw}` } })
     if (!res.ok) throw new ApiError('Backup failed', res.status)
     const url = URL.createObjectURL(await res.blob())
-    const a = Object.assign(document.createElement('a'), { href: url, download: `psc-helper-${new Date().toISOString().slice(0, 10)}.db` })
+    const a = Object.assign(document.createElement('a'), { href: url, download: `govjoli-backup-${new Date().toISOString().slice(0, 10)}.json` })
     a.click()
     URL.revokeObjectURL(url)
   },

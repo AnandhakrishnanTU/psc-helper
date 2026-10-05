@@ -1,11 +1,12 @@
 {
-  "name": "psc-helper",
+  "name": "govjoli",
   "private": true,
-  "description": "Kerala PSC job finder and alerts",
-  "engines": { "node": ">=24" },
+  "description": "GovJoli: Kerala PSC jobs you can apply for, with alerts",
+  "type": "module",
+  "engines": { "node": ">=22" },
   "scripts": {
     "install:all": "npm ci --prefix server --include=dev && npm ci --prefix client --include=dev",
-    "build": "npm run build --prefix client && npm run build --prefix server",
+    "build": "npm run build --prefix client && npm run build --prefix server && npm test --prefix server",
     "start": "npm start --prefix server",
     "test": "npm test --prefix server"
   }

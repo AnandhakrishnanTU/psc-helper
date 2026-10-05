@@ -1,162 +1,106 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
-import { config } from './config.js'
 import { todayIST } from './dates.js'
+import { query, queryOne } from './sql.js'
 import type { Job, JobRecord, JobStatus, JobUpdate, JobUpdateKind, PushSubscriptionData, Subscription, UserProfile } from './types.js'
 
-fs.mkdirSync(path.dirname(path.resolve(config.dbPath)), { recursive: true })
-export const db = new DatabaseSync(config.dbPath)
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
-
-const SCHEMA_VERSION = 1
-const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
-if (version < SCHEMA_VERSION) {
-  // Version 0 was the prototype schema with local test data only
-  db.exec(`
-    DROP TABLE IF EXISTS jobs;
-    DROP TABLE IF EXISTS subscriptions;
-
-    CREATE TABLE jobs (
-      id TEXT PRIMARY KEY,
-      status TEXT NOT NULL DEFAULT 'pending',
-      flag TEXT,
-      data TEXT NOT NULL,
-      gazette_url TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE TABLE job_updates (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-      kind TEXT NOT NULL,
-      title TEXT NOT NULL,
-      url TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE (job_id, kind, title)
-    );
-    CREATE TABLE seen_updates (url TEXT PRIMARY KEY);
-
-    CREATE TABLE subscriptions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token TEXT NOT NULL UNIQUE,
-      channel TEXT NOT NULL,
-      contact TEXT,
-      push TEXT,
-      profile TEXT NOT NULL,
-      verified INTEGER NOT NULL DEFAULT 0,
-      verify_token TEXT UNIQUE,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX subscriptions_contact ON subscriptions(contact);
-
-    CREATE TABLE sent (
-      subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
-      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-      sent_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (subscription_id, job_id)
-    );
-
-    CREATE TABLE runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      started_at TEXT NOT NULL,
-      finished_at TEXT,
-      ok INTEGER,
-      new_jobs INTEGER,
-      errors TEXT
-    );
-    PRAGMA user_version = ${SCHEMA_VERSION};
-  `)
-}
-
 type Row = Record<string, unknown>
+const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : String(v))
+const json = (v: unknown) => JSON.stringify(v)
 
 // ---------- Jobs ----------
 
 function toJobRecord(row: Row): JobRecord {
   return {
-    job: JSON.parse(row.data as string),
+    job: row.data as Job,
     status: row.status as JobStatus,
     flag: (row.flag as string) ?? null,
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
   }
 }
 
-export function getJob(id: string): JobRecord | undefined {
-  const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)
+export async function getJob(id: string): Promise<JobRecord | undefined> {
+  const row = await queryOne('SELECT * FROM jobs WHERE id = $1', [id])
   return row ? toJobRecord(row) : undefined
 }
 
 /** Approved jobs whose last date has not passed. */
-export function getOpenJobs(): Job[] {
-  return db.prepare("SELECT * FROM jobs WHERE status = 'approved'").all()
-    .map(row => toJobRecord(row).job)
-    .filter(job => job.lastDate >= todayIST())
+export async function getOpenJobs(): Promise<Job[]> {
+  const rows = await query("SELECT * FROM jobs WHERE status = 'approved' AND data->>'lastDate' >= $1", [todayIST()])
+  return rows.map(row => toJobRecord(row).job)
 }
 
-export function listJobs(filter: 'review' | 'open' | 'all'): JobRecord[] {
+export async function listJobs(filter: 'review' | 'open' | 'all'): Promise<JobRecord[]> {
   const where = {
     review: "status = 'pending' OR flag IS NOT NULL",
     open: "status = 'approved'",
-    all: '1 = 1',
+    all: 'true',
   }[filter]
-  return db.prepare(`SELECT * FROM jobs WHERE ${where} ORDER BY created_at DESC, id`).all().map(toJobRecord)
+  return (await query(`SELECT * FROM jobs WHERE ${where} ORDER BY created_at DESC, id`)).map(toJobRecord)
 }
 
-export function getJobsByGazette(gazetteUrl: string): JobRecord[] {
-  return db.prepare('SELECT * FROM jobs WHERE gazette_url = ?').all(gazetteUrl).map(toJobRecord)
+export async function getJobsByGazette(gazetteUrl: string): Promise<JobRecord[]> {
+  return (await query('SELECT * FROM jobs WHERE gazette_url = $1', [gazetteUrl])).map(toJobRecord)
 }
 
-export function insertJob(job: Job) {
-  db.prepare('INSERT INTO jobs (id, data, gazette_url) VALUES (?, ?, ?)').run(job.id, JSON.stringify(job), job.gazetteUrl ?? null)
+/** Returns false if the job already existed (e.g. another run saved it first). */
+export async function insertJob(job: Job): Promise<boolean> {
+  const rows = await query('INSERT INTO jobs (id, data, gazette_url) VALUES ($1, $2::jsonb, $3) ON CONFLICT (id) DO NOTHING RETURNING id',
+    [job.id, json(job), job.gazetteUrl ?? null])
+  return rows.length > 0
 }
 
-export function updateJob(job: Job, changes: { status?: JobStatus; flag?: string | null } = {}) {
-  const current = getJob(job.id)
-  if (!current) throw new Error(`Job ${job.id} not found`)
-  db.prepare("UPDATE jobs SET data = ?, status = ?, flag = ?, updated_at = datetime('now') WHERE id = ?").run(
-    JSON.stringify(job),
-    changes.status ?? current.status,
-    changes.flag === undefined ? current.flag : changes.flag,
-    job.id,
+/** Saves job data; status and flag change only when given (flag: null clears it). */
+export async function updateJob(job: Job, changes: { status?: JobStatus; flag?: string | null } = {}) {
+  await query(
+    `UPDATE jobs SET data = $2::jsonb, updated_at = now(),
+       status = COALESCE($3, status),
+       flag = CASE WHEN $4::boolean THEN $5 ELSE flag END
+     WHERE id = $1`,
+    [job.id, json(job), changes.status ?? null, changes.flag !== undefined, changes.flag ?? null],
   )
 }
 
 /** Marks a job as needing admin attention, keeping any earlier reason. */
-export function flagJob(id: string, reason: string) {
-  const current = getJob(id)
-  if (!current) return
-  const flag = current.flag && !current.flag.includes(reason) ? `${current.flag}; ${reason}` : reason
-  db.prepare("UPDATE jobs SET flag = ?, updated_at = datetime('now') WHERE id = ?").run(flag, id)
+export async function flagJob(id: string, reason: string) {
+  await query(
+    `UPDATE jobs SET updated_at = now(), flag = CASE
+       WHEN flag IS NULL THEN $2 WHEN position($2 in flag) > 0 THEN flag ELSE flag || '; ' || $2 END
+     WHERE id = $1`,
+    [id, reason],
+  )
 }
 
 /** Records an update; returns false if it was already recorded. */
-export function addJobUpdate(jobId: string, kind: JobUpdateKind, title: string, url?: string): boolean {
-  return db.prepare('INSERT OR IGNORE INTO job_updates (job_id, kind, title, url) VALUES (?, ?, ?, ?)')
-    .run(jobId, kind, title, url ?? null).changes > 0
+export async function addJobUpdate(jobId: string, kind: JobUpdateKind, title: string, url?: string): Promise<boolean> {
+  const rows = await query(
+    'INSERT INTO job_updates (job_id, kind, title, url) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id',
+    [jobId, kind, title, url ?? null],
+  )
+  return rows.length > 0
 }
 
-export function getJobUpdates(jobIds: string[]): JobUpdate[] {
+export async function getJobUpdates(jobIds: string[]): Promise<JobUpdate[]> {
   if (!jobIds.length) return []
-  return db.prepare(`SELECT * FROM job_updates WHERE job_id IN (${jobIds.map(() => '?').join(',')}) ORDER BY created_at DESC`)
-    .all(...jobIds)
-    .map(row => ({
-      id: row.id as number,
-      jobId: row.job_id as string,
-      kind: row.kind as JobUpdateKind,
-      title: row.title as string,
-      url: (row.url as string) ?? undefined,
-      createdAt: row.created_at as string,
-    }))
+  const rows = await query(
+    'SELECT * FROM job_updates WHERE job_id IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY created_at DESC',
+    [json(jobIds)],
+  )
+  return rows.map(row => ({
+    id: row.id as number,
+    jobId: row.job_id as string,
+    kind: row.kind as JobUpdateKind,
+    title: row.title as string,
+    url: (row.url as string) ?? undefined,
+    createdAt: iso(row.created_at),
+  }))
 }
 
-export function isUpdateSeen(url: string): boolean {
-  return db.prepare('SELECT 1 FROM seen_updates WHERE url = ?').get(url) !== undefined
+export async function isUpdateSeen(url: string): Promise<boolean> {
+  return (await queryOne('SELECT 1 FROM seen_updates WHERE url = $1', [url])) !== undefined
 }
 
-export function markUpdateSeen(url: string) {
-  db.prepare('INSERT OR IGNORE INTO seen_updates (url) VALUES (?)').run(url)
+export async function markUpdateSeen(url: string) {
+  await query('INSERT INTO seen_updates (url) VALUES ($1) ON CONFLICT DO NOTHING', [url])
 }
 
 // ---------- Subscriptions ----------
@@ -167,114 +111,178 @@ function toSubscription(row: Row): Subscription {
     token: row.token as string,
     channel: row.channel as Subscription['channel'],
     contact: (row.contact as string) ?? undefined,
-    push: row.push ? JSON.parse(row.push as string) : undefined,
-    profile: JSON.parse(row.profile as string),
-    verified: row.verified === 1,
+    push: (row.push as PushSubscriptionData) ?? undefined,
+    profile: row.profile as UserProfile,
+    verified: row.verified as boolean,
     verifyToken: (row.verify_token as string) ?? null,
-    createdAt: row.created_at as string,
+    createdAt: iso(row.created_at),
   }
 }
 
-export function insertSubscription(sub: Omit<Subscription, 'id' | 'createdAt'>): Subscription {
-  const result = db.prepare(
-    'INSERT INTO subscriptions (token, channel, contact, push, profile, verified, verify_token) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).run(sub.token, sub.channel, sub.contact ?? null, sub.push ? JSON.stringify(sub.push) : null,
-    JSON.stringify(sub.profile), sub.verified ? 1 : 0, sub.verifyToken)
-  return getSubscriptionById(Number(result.lastInsertRowid))!
+export async function insertSubscription(sub: Omit<Subscription, 'id' | 'createdAt'>): Promise<Subscription> {
+  const row = await queryOne(
+    `INSERT INTO subscriptions (token, channel, contact, push, profile, verified, verify_token)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7) RETURNING *`,
+    [sub.token, sub.channel, sub.contact ?? null, sub.push ? json(sub.push) : null, json(sub.profile), sub.verified, sub.verifyToken],
+  )
+  return toSubscription(row!)
 }
 
-export function getSubscriptionById(id: number): Subscription | undefined {
-  const row = db.prepare('SELECT * FROM subscriptions WHERE id = ?').get(id)
+export async function getSubscriptionById(id: number) {
+  const row = await queryOne('SELECT * FROM subscriptions WHERE id = $1', [id])
   return row ? toSubscription(row) : undefined
 }
 
-export function getSubscriptionByToken(token: string): Subscription | undefined {
-  const row = db.prepare('SELECT * FROM subscriptions WHERE token = ?').get(token)
+export async function getSubscriptionByToken(token: string) {
+  const row = await queryOne('SELECT * FROM subscriptions WHERE token = $1', [token])
   return row ? toSubscription(row) : undefined
 }
 
-export function getSubscriptionsByEmail(email: string): Subscription[] {
-  return db.prepare("SELECT * FROM subscriptions WHERE channel = 'email' AND contact = ?").all(email).map(toSubscription)
+export async function getSubscriptionsByEmail(email: string) {
+  return (await query("SELECT * FROM subscriptions WHERE channel = 'email' AND contact = $1", [email])).map(toSubscription)
 }
 
-export function getSubscriptionByEndpoint(endpoint: string): Subscription | undefined {
-  const row = db.prepare("SELECT * FROM subscriptions WHERE channel = 'push' AND json_extract(push, '$.endpoint') = ?").get(endpoint)
+export async function getSubscriptionByEndpoint(endpoint: string) {
+  const row = await queryOne("SELECT * FROM subscriptions WHERE channel = 'push' AND push->>'endpoint' = $1", [endpoint])
   return row ? toSubscription(row) : undefined
 }
 
-export function getVerifiedSubscriptions(): Subscription[] {
-  return db.prepare('SELECT * FROM subscriptions WHERE verified = 1').all().map(toSubscription)
+export async function getVerifiedSubscriptions() {
+  return (await query('SELECT * FROM subscriptions WHERE verified ORDER BY id')).map(toSubscription)
 }
 
-export function verifySubscription(verifyToken: string): Subscription | undefined {
-  const row = db.prepare('SELECT id FROM subscriptions WHERE verify_token = ?').get(verifyToken)
-  if (!row) return undefined
-  db.prepare('UPDATE subscriptions SET verified = 1, verify_token = NULL WHERE id = ?').run(row.id as number)
-  return getSubscriptionById(row.id as number)
+export async function verifySubscription(verifyToken: string) {
+  const row = await queryOne('UPDATE subscriptions SET verified = true, verify_token = NULL WHERE verify_token = $1 RETURNING *', [verifyToken])
+  return row ? toSubscription(row) : undefined
 }
 
-export function updateSubscriptionProfile(id: number, profile: UserProfile) {
-  db.prepare('UPDATE subscriptions SET profile = ? WHERE id = ?').run(JSON.stringify(profile), id)
+export async function updateSubscriptionProfile(id: number, profile: UserProfile) {
+  await query('UPDATE subscriptions SET profile = $2::jsonb WHERE id = $1', [id, json(profile)])
 }
 
-export function updateSubscriptionPush(id: number, push: PushSubscriptionData) {
-  db.prepare('UPDATE subscriptions SET push = ? WHERE id = ?').run(JSON.stringify(push), id)
+export async function updateSubscriptionPush(id: number, push: PushSubscriptionData) {
+  await query('UPDATE subscriptions SET push = $2::jsonb WHERE id = $1', [id, json(push)])
 }
 
-export function deleteSubscription(id: number) {
-  db.prepare('DELETE FROM subscriptions WHERE id = ?').run(id)
+export async function deleteSubscription(id: number) {
+  await query('DELETE FROM subscriptions WHERE id = $1', [id])
 }
 
 /** Removes email sign-ups that were never confirmed. */
-export function deleteStaleUnverified(hours = 48): number {
-  return Number(db.prepare(`DELETE FROM subscriptions WHERE verified = 0 AND created_at < datetime('now', '-${hours} hours')`).run().changes)
+export async function deleteStaleUnverified(hours = 48): Promise<number> {
+  return (await query(`DELETE FROM subscriptions WHERE NOT verified AND created_at < now() - make_interval(hours => $1) RETURNING id`, [hours])).length
 }
 
 // ---------- Sent alerts ----------
 
-export function wasSent(subscriptionId: number, jobId: string): boolean {
-  return db.prepare('SELECT 1 FROM sent WHERE subscription_id = ? AND job_id = ?').get(subscriptionId, jobId) !== undefined
+/** All (subscription, job) pairs already alerted, for the given jobs. */
+export async function getSentPairs(jobIds: string[]): Promise<Set<string>> {
+  if (!jobIds.length) return new Set()
+  const rows = await query<{ subscription_id: number; job_id: string }>(
+    'SELECT subscription_id, job_id FROM sent WHERE job_id IN (SELECT jsonb_array_elements_text($1::jsonb))', [json(jobIds)])
+  return new Set(rows.map(r => `${r.subscription_id}:${r.job_id}`))
 }
 
-export function markSent(subscriptionId: number, jobIds: string[]) {
-  const insert = db.prepare('INSERT OR IGNORE INTO sent (subscription_id, job_id) VALUES (?, ?)')
-  for (const id of jobIds) insert.run(subscriptionId, id)
+/**
+ * Reserves jobs for an alert before sending. Returns only the jobs this caller reserved, so two
+ * runs at the same time can never send the same alert twice.
+ */
+export async function claimSent(subscriptionId: number, jobIds: string[]): Promise<string[]> {
+  if (!jobIds.length) return []
+  const rows = await query<{ job_id: string }>(
+    `INSERT INTO sent (subscription_id, job_id) SELECT $1, jsonb_array_elements_text($2::jsonb)
+     ON CONFLICT DO NOTHING RETURNING job_id`, [subscriptionId, json(jobIds)])
+  return rows.map(r => r.job_id)
 }
 
-// ---------- Scrape runs ----------
-
-export function startRun(): number {
-  return Number(db.prepare('INSERT INTO runs (started_at) VALUES (?)').run(new Date().toISOString()).lastInsertRowid)
+/** Releases a reservation after a failed send, so it is retried later. */
+export async function unclaimSent(subscriptionId: number, jobIds: string[]) {
+  if (!jobIds.length) return
+  await query('DELETE FROM sent WHERE subscription_id = $1 AND job_id IN (SELECT jsonb_array_elements_text($2::jsonb))',
+    [subscriptionId, json(jobIds)])
 }
 
-export function finishRun(id: number, newJobs: number, errors: string[]) {
-  db.prepare('UPDATE runs SET finished_at = ?, ok = ?, new_jobs = ?, errors = ? WHERE id = ?')
-    .run(new Date().toISOString(), errors.length ? 0 : 1, newJobs, JSON.stringify(errors), id)
+// ---------- Locks (one job check at a time across all server instances) ----------
+
+export async function acquireLock(name: string, minutes: number): Promise<boolean> {
+  const rows = await query(
+    `INSERT INTO locks (name, expires_at) VALUES ($1, now() + make_interval(mins => $2))
+     ON CONFLICT (name) DO UPDATE SET expires_at = EXCLUDED.expires_at WHERE locks.expires_at < now()
+     RETURNING name`, [name, minutes])
+  return rows.length > 0
 }
 
-export function recentRuns(limit = 10) {
-  return db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT ?').all(limit).map(row => ({
-    startedAt: row.started_at as string,
-    finishedAt: (row.finished_at as string) ?? null,
-    ok: row.ok === 1,
+export async function releaseLock(name: string) {
+  await query('DELETE FROM locks WHERE name = $1', [name])
+}
+
+// ---------- Rate limits (shared by all server instances) ----------
+
+export async function hitRateLimit(key: string, windowMs: number): Promise<{ hits: number; resetAt: Date }> {
+  const row = await queryOne<{ hits: number; reset_at: Date }>(
+    `INSERT INTO rate_limits (key, hits, reset_at) VALUES ($1, 1, now() + make_interval(secs => $2))
+     ON CONFLICT (key) DO UPDATE SET
+       hits = CASE WHEN rate_limits.reset_at < now() THEN 1 ELSE rate_limits.hits + 1 END,
+       reset_at = CASE WHEN rate_limits.reset_at < now() THEN EXCLUDED.reset_at ELSE rate_limits.reset_at END
+     RETURNING hits, reset_at`, [key, windowMs / 1000])
+  return { hits: row!.hits, resetAt: new Date(row!.reset_at) }
+}
+
+export async function changeRateLimit(key: string, delta: number | null) {
+  if (delta === null) await query('DELETE FROM rate_limits WHERE key = $1', [key])
+  else await query('UPDATE rate_limits SET hits = GREATEST(hits + $2, 0) WHERE key = $1', [key, delta])
+}
+
+export async function deleteExpiredRateLimits() {
+  await query('DELETE FROM rate_limits WHERE reset_at < now()')
+}
+
+// ---------- Job check runs ----------
+
+export async function startRun(): Promise<number> {
+  return (await queryOne<{ id: number }>('INSERT INTO runs DEFAULT VALUES RETURNING id'))!.id
+}
+
+export async function finishRun(id: number, newJobs: number, errors: string[]) {
+  await query('UPDATE runs SET finished_at = now(), ok = $2, new_jobs = $3, errors = $4::jsonb WHERE id = $1',
+    [id, errors.length === 0, newJobs, json(errors)])
+}
+
+export async function recentRuns(limit = 10) {
+  const rows = await query('SELECT * FROM runs ORDER BY id DESC LIMIT $1', [limit])
+  return rows.map(row => ({
+    startedAt: iso(row.started_at),
+    finishedAt: row.finished_at ? iso(row.finished_at) : null,
+    ok: row.ok === true,
     newJobs: (row.new_jobs as number) ?? 0,
-    errors: row.errors ? (JSON.parse(row.errors as string) as string[]) : [],
+    errors: (row.errors as string[]) ?? [],
   }))
 }
 
-export function lastSuccessfulRun(): string | null {
-  const row = db.prepare('SELECT finished_at FROM runs WHERE ok = 1 ORDER BY id DESC LIMIT 1').get()
-  return (row?.finished_at as string) ?? null
+export async function lastSuccessfulRun(): Promise<string | null> {
+  const row = await queryOne('SELECT finished_at FROM runs WHERE ok ORDER BY id DESC LIMIT 1')
+  return row ? iso(row.finished_at) : null
 }
 
-export function stats() {
-  const count = (sql: string) => Number((db.prepare(sql).get() as { n: number }).n)
-  return {
-    pendingJobs: count("SELECT COUNT(*) n FROM jobs WHERE status = 'pending'"),
-    flaggedJobs: count('SELECT COUNT(*) n FROM jobs WHERE flag IS NOT NULL'),
-    openJobs: getOpenJobs().length,
-    emailSubscribers: count("SELECT COUNT(*) n FROM subscriptions WHERE verified = 1 AND channel = 'email'"),
-    pushSubscribers: count("SELECT COUNT(*) n FROM subscriptions WHERE verified = 1 AND channel = 'push'"),
-    unverified: count('SELECT COUNT(*) n FROM subscriptions WHERE verified = 0'),
-  }
+export async function deleteOldRuns(days = 60) {
+  await query('DELETE FROM runs WHERE started_at < now() - make_interval(days => $1)', [days])
+}
+
+export async function stats() {
+  const row = await queryOne<Record<string, number>>(`SELECT
+    (SELECT count(*)::int FROM jobs WHERE status = 'pending') AS "pendingJobs",
+    (SELECT count(*)::int FROM jobs WHERE flag IS NOT NULL) AS "flaggedJobs",
+    (SELECT count(*)::int FROM jobs WHERE status = 'approved' AND data->>'lastDate' >= $1) AS "openJobs",
+    (SELECT count(*)::int FROM subscriptions WHERE verified AND channel = 'email') AS "emailSubscribers",
+    (SELECT count(*)::int FROM subscriptions WHERE verified AND channel = 'push') AS "pushSubscribers",
+    (SELECT count(*)::int FROM subscriptions WHERE NOT verified) AS "unverified"`, [todayIST()])
+  return row!
+}
+
+/** Every table as JSON, for the admin's manual backup download. */
+export async function exportAll() {
+  const tables = ['jobs', 'job_updates', 'seen_updates', 'subscriptions', 'sent', 'runs']
+  const out: Record<string, Row[]> = {}
+  for (const t of tables) out[t] = await query(`SELECT * FROM ${t}`)
+  return { exportedAt: new Date().toISOString(), tables: out }
 }

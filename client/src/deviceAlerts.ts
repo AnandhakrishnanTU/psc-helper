@@ -1,5 +1,5 @@
 // Manage links for alerts created on this device, so users can find them again without email
-const KEY = 'psc-helper-alerts'
+const KEY = 'govjoli-alerts'
 
 export interface DeviceAlert {
   token: string

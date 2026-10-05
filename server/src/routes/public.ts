@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto'
 import { Router, type Request, type Response } from 'express'
-import { rateLimit } from 'express-rate-limit'
 import { z } from 'zod'
 import { sendWelcome } from '../alerts.js'
 import {
@@ -11,18 +10,15 @@ import {
 import { log } from '../log.js'
 import { checkEligibility, subjectMatches } from '../matcher.js'
 import { emailEnabled, sendManageLinks, sendVerificationEmail, vapidPublicKey } from '../notifier.js'
+import { limiter } from '../rateLimit.js'
 import {
   alertProfileSchema, emailOnlySchema, profileSchema, pushRenewSchema, subscribeSchema, tokenSchema,
 } from '../validation.js'
 
 const MAX_ALERTS_PER_EMAIL = 3
+const HOUR = 60 * 60_000
 
 export const publicRoutes = Router()
-
-const limit = (perHour: number) => rateLimit({
-  windowMs: 60 * 60_000, limit: perHour, standardHeaders: 'draft-8', legacyHeaders: false,
-  message: { error: 'Too many requests. Please try again later.' },
-})
 
 const newToken = () => randomBytes(24).toString('hex')
 
@@ -45,31 +41,31 @@ function parse<T>(schema: z.ZodType<T>, data: unknown, res: Response): T | undef
 }
 
 /** Looks up the subscription for a manage/unsubscribe token, or sends 404. */
-function findByToken(req: Request, res: Response) {
+async function findByToken(req: Request, res: Response) {
   const token = tokenSchema.safeParse(req.params.token ?? req.query.token ?? req.body?.token)
-  const sub = token.success ? getSubscriptionByToken(token.data) : undefined
+  const sub = token.success ? await getSubscriptionByToken(token.data) : undefined
   if (!sub) res.status(404).json({ error: 'This link is not valid any more. The alert may already be deleted.' })
   return sub
 }
 
-publicRoutes.get('/health', (_req, res) => {
-  res.json({ ok: true, lastSuccessfulCheck: lastSuccessfulRun() })
+publicRoutes.get('/health', async (_req, res) => {
+  res.json({ ok: true, lastSuccessfulCheck: await lastSuccessfulRun() })
 })
 
 publicRoutes.get('/config', (_req, res) => {
   res.json({ pushPublicKey: vapidPublicKey, emailEnabled })
 })
 
-publicRoutes.post('/jobs/match', limit(300), (req, res) => {
+publicRoutes.post('/jobs/match', limiter('match', HOUR, 300), async (req, res) => {
   const profile = parse(profileSchema, req.body, res)
   if (!profile) return
   // Order: clearly eligible, then "check" jobs mentioning the user's subject, then other "check" jobs
   const rank = (m: { match: string; subject: boolean }) => (m.match === 'yes' ? 0 : m.subject ? 1 : 2)
-  const matches = getOpenJobs()
+  const matches = (await getOpenJobs())
     .map(job => ({ job, match: checkEligibility(profile, job), subject: subjectMatches(profile, job) }))
     .filter(({ match }) => match !== 'no')
     .sort((a, b) => rank(a) - rank(b) || a.job.lastDate.localeCompare(b.job.lastDate))
-  const updates = getJobUpdates(matches.map(m => m.job.id))
+  const updates = await getJobUpdates(matches.map(m => m.job.id))
   res.json(matches.map(({ job: { eligibility, gazetteUrl, ...job }, match, subject }) => ({
     ...job,
     needsCheck: match === 'maybe',
@@ -80,7 +76,7 @@ publicRoutes.post('/jobs/match', limit(300), (req, res) => {
   })))
 })
 
-publicRoutes.post('/subscriptions', limit(10), async (req, res) => {
+publicRoutes.post('/subscriptions', limiter('subscribe', HOUR, 10), async (req, res) => {
   const input = parse(subscribeSchema, req.body, res)
   if (!input) return
 
@@ -89,11 +85,11 @@ publicRoutes.post('/subscriptions', limit(10), async (req, res) => {
       res.status(503).json({ error: 'Email alerts are not available yet. Please use mobile notifications.' })
       return
     }
-    if (getSubscriptionsByEmail(input.contact).length >= MAX_ALERTS_PER_EMAIL) {
+    if ((await getSubscriptionsByEmail(input.contact)).length >= MAX_ALERTS_PER_EMAIL) {
       res.status(409).json({ error: `This email already has ${MAX_ALERTS_PER_EMAIL} alerts. Use "Manage my alerts" to change them.` })
       return
     }
-    const sub = insertSubscription({
+    const sub = await insertSubscription({
       token: newToken(), channel: 'email', contact: input.contact, profile: input.profile,
       verified: false, verifyToken: newToken(),
     })
@@ -101,7 +97,7 @@ publicRoutes.post('/subscriptions', limit(10), async (req, res) => {
       await sendVerificationEmail(sub)
     } catch (err) {
       log.error('Verification email failed', err)
-      deleteSubscription(sub.id)
+      await deleteSubscription(sub.id)
       res.status(502).json({ error: 'Could not send the confirmation email. Please try again later.' })
       return
     }
@@ -110,35 +106,36 @@ publicRoutes.post('/subscriptions', limit(10), async (req, res) => {
   }
 
   // Push: the browser permission prompt already proves the user wants it
-  const existing = getSubscriptionByEndpoint(input.push.endpoint)
+  const existing = await getSubscriptionByEndpoint(input.push.endpoint)
   if (existing) {
-    updateSubscriptionProfile(existing.id, input.profile)
+    await updateSubscriptionProfile(existing.id, input.profile)
     res.json({ ok: true, token: existing.token })
-  } else {
-    const sub = insertSubscription({
-      token: newToken(), channel: 'push', push: input.push, profile: input.profile, verified: true, verifyToken: null,
-    })
-    res.json({ ok: true, token: sub.token })
-    void sendWelcome(sub.id)
+    return
   }
+  const sub = await insertSubscription({
+    token: newToken(), channel: 'push', push: input.push, profile: input.profile, verified: true, verifyToken: null,
+  })
+  // Sent before answering: serverless functions may stop as soon as the response is sent
+  await sendWelcome(sub.id)
+  res.json({ ok: true, token: sub.token })
 })
 
-publicRoutes.post('/subscriptions/verify', limit(30), (req, res) => {
+publicRoutes.post('/subscriptions/verify', limiter('verify', HOUR, 30), async (req, res) => {
   const token = parse(z.object({ token: tokenSchema }), req.body, res)
   if (!token) return
-  const sub = verifySubscription(token.token)
+  const sub = await verifySubscription(token.token)
   if (!sub) {
     res.status(404).json({ error: 'This confirmation link is not valid or was already used.' })
     return
   }
+  await sendWelcome(sub.id)
   res.json({ ok: true, token: sub.token })
-  void sendWelcome(sub.id)
 })
 
-publicRoutes.post('/subscriptions/send-links', limit(5), async (req, res) => {
+publicRoutes.post('/subscriptions/send-links', limiter('send-links', HOUR, 5), async (req, res) => {
   const input = parse(emailOnlySchema, req.body, res)
   if (!input) return
-  const subs = getSubscriptionsByEmail(input.email).filter(s => s.verified)
+  const subs = (await getSubscriptionsByEmail(input.email)).filter(s => s.verified)
   if (subs.length) {
     try {
       await sendManageLinks(input.email, subs)
@@ -150,40 +147,42 @@ publicRoutes.post('/subscriptions/send-links', limit(5), async (req, res) => {
   res.json({ ok: true })
 })
 
-publicRoutes.post('/subscriptions/push-renew', limit(30), (req, res) => {
+publicRoutes.post('/subscriptions/push-renew', limiter('push-renew', HOUR, 30), async (req, res) => {
   const input = parse(pushRenewSchema, req.body, res)
   if (!input) return
-  const sub = getSubscriptionByEndpoint(input.oldEndpoint)
-  if (sub) updateSubscriptionPush(sub.id, input.push)
+  const sub = await getSubscriptionByEndpoint(input.oldEndpoint)
+  if (sub) await updateSubscriptionPush(sub.id, input.push)
   res.json({ ok: true })
 })
+
+const manageLimit = limiter('manage', HOUR, 60)
 
 // One-click unsubscribe from email clients, and the unsubscribe page
-publicRoutes.post('/subscriptions/unsubscribe', limit(30), (req, res) => {
-  const sub = findByToken(req, res)
+publicRoutes.post('/subscriptions/unsubscribe', manageLimit, async (req, res) => {
+  const sub = await findByToken(req, res)
   if (!sub) return
-  deleteSubscription(sub.id)
+  await deleteSubscription(sub.id)
   res.json({ ok: true })
 })
 
-publicRoutes.get('/subscriptions/:token', limit(60), (req, res) => {
-  const sub = findByToken(req, res)
+publicRoutes.get('/subscriptions/:token', manageLimit, async (req, res) => {
+  const sub = await findByToken(req, res)
   if (!sub) return
   res.json({ channel: sub.channel, contact: sub.contact, profile: sub.profile, verified: sub.verified })
 })
 
-publicRoutes.put('/subscriptions/:token', limit(30), (req, res) => {
-  const sub = findByToken(req, res)
+publicRoutes.put('/subscriptions/:token', manageLimit, async (req, res) => {
+  const sub = await findByToken(req, res)
   if (!sub) return
   const profile = parse(alertProfileSchema, req.body?.profile, res)
   if (!profile) return
-  updateSubscriptionProfile(sub.id, profile)
+  await updateSubscriptionProfile(sub.id, profile)
   res.json({ ok: true })
 })
 
-publicRoutes.delete('/subscriptions/:token', limit(30), (req, res) => {
-  const sub = findByToken(req, res)
+publicRoutes.delete('/subscriptions/:token', manageLimit, async (req, res) => {
+  const sub = await findByToken(req, res)
   if (!sub) return
-  deleteSubscription(sub.id)
+  await deleteSubscription(sub.id)
   res.json({ ok: true })
 })

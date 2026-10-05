@@ -14,8 +14,8 @@ export default defineConfig({
       filename: 'sw.ts',
       devOptions: { enabled: true, type: 'module' },
       manifest: {
-        name: 'PSC Helper',
-        short_name: 'PSC Helper',
+        name: 'GovJoli',
+        short_name: 'GovJoli',
         description: 'Find Kerala PSC job openings that match your qualification',
         theme_color: '#1e3a8a',
         background_color: '#ffffff',

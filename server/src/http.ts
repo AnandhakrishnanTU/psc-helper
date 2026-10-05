@@ -1,8 +1,8 @@
 import { PDFParse } from 'pdf-parse'
 
-const HEADERS = { 'User-Agent': 'Mozilla/5.0 (PSC Helper; job alert service)' }
-const TIMEOUT_MS = 60_000
-const RETRIES = 3
+const HEADERS = { 'User-Agent': 'Mozilla/5.0 (GovJoli; job alert service; +https://govjoli.codemure.com)' }
+const TIMEOUT_MS = 30_000
+const RETRIES = 2
 
 /** fetch with timeout and retries; the PSC site is often slow or briefly down. */
 async function fetchWithRetry(url: string): Promise<Response> {
@@ -16,7 +16,7 @@ async function fetchWithRetry(url: string): Promise<Response> {
     } catch (err) {
       lastError = err
     }
-    if (attempt < RETRIES) await new Promise(r => setTimeout(r, attempt * 5000))
+    if (attempt < RETRIES) await new Promise(r => setTimeout(r, attempt * 3000))
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }

@@ -89,7 +89,7 @@ export default function AlertsPage() {
 
         <label className="inline">
           <input type="checkbox" required checked={consent} onChange={e => setConsent(e.target.checked)} />
-          <span>I agree that PSC Helper stores these details to send me job alerts, as described in the{' '}
+          <span>I agree that GovJoli stores these details to send me job alerts, as described in the{' '}
             <Link to="/privacy" target="_blank">privacy policy</Link>. I can delete them at any time.</span>
         </label>
 

@@ -3,8 +3,8 @@ import { CONTACT_EMAIL } from '../siteConfig'
 export default function AboutPage() {
   return (
     <article className="prose">
-      <h2>About PSC Helper</h2>
-      <p>PSC Helper is a free tool that helps Kerala PSC aspirants find job notifications they can apply for, without searching the PSC website or newspapers every day.</p>
+      <h2>About GovJoli</h2>
+      <p>GovJoli is a free tool by <a href="https://codemure.com" target="_blank" rel="noreferrer">Codemure</a> that helps Kerala PSC aspirants find job notifications they can apply for, without searching the PSC website or newspapers every day.</p>
 
       <h3>How it works</h3>
       <ol>
@@ -15,10 +15,10 @@ export default function AboutPage() {
 
       <h3 id="disclaimer">Disclaimer</h3>
       <p className="notice">
-        PSC Helper is <b>not affiliated with, endorsed by or connected to the Kerala Public Service Commission</b>.
+        GovJoli is <b>not affiliated with, endorsed by or connected to the Kerala Public Service Commission</b>.
         Information is taken from the official PSC website and may contain errors or be out of date.
         <b> Always read the official notification before applying.</b> Apply only through the official
-        Thulasi portal (thulasi.psc.kerala.gov.in). PSC Helper never asks for your PSC login, fees or documents.
+        Thulasi portal (thulasi.psc.kerala.gov.in). GovJoli never asks for your PSC login, fees or documents.
       </p>
       <p>Found a mistake? Email <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.</p>
     </article>

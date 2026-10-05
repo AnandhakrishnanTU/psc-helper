@@ -16,14 +16,14 @@ export default function PrivacyPage() {
       <p>We do not sell or share your data, show ads, or use tracking or analytics cookies.</p>
 
       <h3>Where it is kept</h3>
-      <p>Data is stored on our hosting provider's servers. Emails are delivered through an email delivery service and phone notifications through your browser's notification service (Google, Apple, Mozilla or Microsoft). These services only receive what is needed to deliver the message.</p>
+      <p>Data is stored in a database run by Supabase (in Mumbai, India) and the app runs on Vercel. Emails are delivered through an email delivery service and phone notifications through your browser's notification service (Google, Apple, Mozilla or Microsoft). These services only receive what is needed to deliver the message.</p>
 
       <h3>How long we keep it</h3>
       <ul>
         <li>Until you unsubscribe or delete your alert. Deleting removes it immediately.</li>
         <li>Email sign-ups that are not confirmed within 48 hours are deleted automatically.</li>
         <li>Phone notification sign-ups are deleted when your browser tells us notifications were turned off.</li>
-        <li>Database backups are kept for 14 days, then deleted.</li>
+        <li>Backup copies of the database are kept for at most 30 days, then deleted.</li>
       </ul>
 
       <h3>Your rights</h3>

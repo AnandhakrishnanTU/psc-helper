@@ -15,7 +15,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <header>
-        <h1><Link to="/">PSC Helper</Link></h1>
+        <h1><Link to="/">GovJoli</Link></h1>
         <NavLink to="/" end>Jobs</NavLink>
         <NavLink to="/alerts">Alerts</NavLink>
       </header>
@@ -41,6 +41,7 @@ export default function App() {
           <Link to="/about#disclaimer">Disclaimer</Link>
         </p>
         <p><Link to="/about">About</Link> · <Link to="/privacy">Privacy</Link> · <Link to="/manage">Manage alerts</Link></p>
+        <p>A free tool by <a href="https://codemure.com" target="_blank" rel="noreferrer">Codemure</a></p>
       </footer>
     </BrowserRouter>
   )

@@ -6,7 +6,7 @@ import ProfileFields, { emptyProfile } from '../ProfileFields'
 import type { Job, UserProfile } from '../types'
 
 // The search profile is remembered on this device only, never sent anywhere except to search
-const KEY = 'psc-helper-profile'
+const KEY = 'govjoli-profile'
 const savedProfile = (): UserProfile => {
   try {
     return { ...emptyProfile, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') }

@@ -21,7 +21,7 @@ if (pushEnabled) webpush.setVapidDetails(config.vapid.subject, config.vapid.publ
 export const vapidPublicKey = config.vapid.publicKey
 export const emailEnabled = mailer !== null
 
-const DISCLAIMER = 'PSC Helper is not affiliated with Kerala PSC. Always confirm eligibility in the official notification before applying.'
+const DISCLAIMER = 'GovJoli is not affiliated with Kerala PSC. Always confirm eligibility in the official notification before applying.'
 
 function escape(text: string) {
   return text.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
@@ -78,7 +78,7 @@ export async function sendVerificationEmail(sub: Subscription) {
   const link = `${config.appUrl}/verify?token=${sub.verifyToken}`
   await sendEmail({
     to: sub.contact!,
-    subject: 'Confirm your PSC Helper job alerts',
+    subject: 'Confirm your GovJoli job alerts',
     text: `Open this link to start receiving PSC job alerts:\n${link}\n\nIf you did not sign up, ignore this email and nothing will be sent.\n\n${DISCLAIMER}`,
     html: layout(`<p>Click below to start receiving Kerala PSC job alerts.</p>
       <p><a href="${link}" style="background:#1e3a8a;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none">Confirm alerts</a></p>
@@ -90,7 +90,7 @@ export async function sendManageLinks(email: string, subs: Subscription[]) {
   const links = subs.map((s, i) => `Alert ${i + 1} (${s.profile.qualification}): ${manageUrl(s)}`)
   await sendEmail({
     to: email,
-    subject: 'Your PSC Helper alert links',
+    subject: 'Your GovJoli alert links',
     text: `Use these links to change or delete your alerts:\n${links.join('\n')}\n\n${DISCLAIMER}`,
     html: layout(`<p>Use these links to change or delete your alerts:</p><ul>${
       subs.map((s, i) => `<li><a href="${manageUrl(s)}">Alert ${i + 1} (${escape(s.profile.qualification)})</a></li>`).join('')
@@ -107,7 +107,7 @@ export async function sendJobAlert(sub: Subscription, jobs: Job[], title: string
       to: sub.contact,
       subject: title,
       text: `${title}\n\n${jobs.map(describe).join('\n')}\n\nSee all: ${config.appUrl}${textFooter(sub)}`,
-      html: layout(`<p>${escape(title)}</p><ul>${items}</ul><p><a href="${config.appUrl}">Open PSC Helper</a></p>`, sub),
+      html: layout(`<p>${escape(title)}</p><ul>${items}</ul><p><a href="${config.appUrl}">Open GovJoli</a></p>`, sub),
       unsubscribe: sub,
     })
     return true
@@ -125,7 +125,7 @@ export async function sendJobAlert(sub: Subscription, jobs: Job[], title: string
       const status = (err as { statusCode?: number }).statusCode
       if (status === 404 || status === 410) {
         // Browser unsubscribed or app was uninstalled
-        deleteSubscription(sub.id)
+        await deleteSubscription(sub.id)
         log.info(`Removed expired push subscription ${sub.id}`)
         return false
       }
@@ -145,7 +145,7 @@ export async function sendAdminEmail(subject: string, lines: string[]) {
   try {
     await sendEmail({
       to: config.adminEmail,
-      subject: `[PSC Helper] ${subject}`,
+      subject: `[GovJoli] ${subject}`,
       text: `${lines.join('\n')}\n\nAdmin: ${config.appUrl}/admin`,
       html: `<div style="font-family:system-ui,sans-serif"><ul>${lines.map(l => `<li>${escape(l)}</li>`).join('')}</ul>
         <p><a href="${config.appUrl}/admin">Open admin page</a></p></div>`,
