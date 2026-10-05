@@ -23,6 +23,13 @@ export interface UserProfile {
   community?: string
 }
 
+export interface JobUpdate {
+  kind: 'erratum' | 'addendum' | 'cancellation' | 'extension' | 'revised' | 'removed'
+  title: string
+  url?: string
+  createdAt: string
+}
+
 export interface Job {
   id: string
   categoryNo: string
@@ -35,13 +42,84 @@ export interface Job {
   lastDate: string
   notificationUrl: string
   needsCheck: boolean
+  subjectMismatch: boolean
+  checkReasons: string[]
+  notes: string[]
+  updates: JobUpdate[]
 }
 
-export type NotifyChannel = 'email' | 'whatsapp' | 'push'
+export type NotifyChannel = 'email' | 'push'
 
-export interface Subscription {
+export interface SubscribeRequest {
   profile: UserProfile
   channel: NotifyChannel
   contact?: string
   push?: PushSubscriptionJSON
+  consent: boolean
+  website?: string // honeypot
+}
+
+export interface SubscriptionDetails {
+  channel: NotifyChannel
+  contact?: string
+  profile: UserProfile
+  verified: boolean
+}
+
+// ---------- Admin ----------
+
+export interface Eligibility {
+  qualifications: string[]
+  notFor?: string[]
+  streams?: string[]
+  dobFrom?: string
+  dobTo?: string
+  minAge?: number
+  maxAge?: number
+  relaxationIncluded?: boolean
+  communities?: string[]
+  inServiceOnly?: boolean
+  needsCheck: boolean
+  checkReasons?: string[]
+  notes?: string[]
+}
+
+export interface AdminJob {
+  id: string
+  categoryNo: string
+  title: string
+  department: string
+  qualification: string
+  ageLimit: string
+  pay: string
+  vacancies: string
+  lastDate: string
+  notificationUrl: string
+  gazetteUrl?: string
+  eligibility: Eligibility
+}
+
+export type JobStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
+
+export interface AdminJobRecord {
+  job: AdminJob
+  status: JobStatus
+  flag: string | null
+  createdAt: string
+  updatedAt: string
+  updates: JobUpdate[]
+}
+
+export interface AdminSummary {
+  stats: {
+    pendingJobs: number
+    flaggedJobs: number
+    openJobs: number
+    emailSubscribers: number
+    pushSubscribers: number
+    unverified: number
+  }
+  runs: { startedAt: string; finishedAt: string | null; ok: boolean; newJobs: number; errors: string[] }[]
+  lastSuccessfulCheck: string | null
+  setup: { email: boolean; push: boolean; adminEmail: boolean; appUrl: string }
 }

@@ -1,0 +1,12 @@
+{
+  "name": "psc-helper",
+  "private": true,
+  "description": "Kerala PSC job finder and alerts",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "install:all": "npm ci --prefix server --include=dev && npm ci --prefix client --include=dev",
+    "build": "npm run build --prefix client && npm run build --prefix server",
+    "start": "npm start --prefix server",
+    "test": "npm test --prefix server"
+  }
+}

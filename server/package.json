@@ -4,11 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "dev": "tsx watch --use-system-ca --env-file-if-exists=.env src/index.ts",
     "build": "tsc",
-    "start": "node --use-system-ca --env-file-if-exists=.env dist/index.js",
-    "scrape": "tsx --use-system-ca --env-file-if-exists=.env src/scrape-now.ts"
+    "start": "node --use-system-ca --disable-warning=ExperimentalWarning --env-file-if-exists=.env dist/index.js",
+    "scrape": "tsx --use-system-ca --env-file-if-exists=.env src/scrape-now.ts",
+    "audit": "tsx --use-system-ca src/tools/audit.ts"
   },
   "keywords": [],
   "author": "",
@@ -17,10 +18,13 @@
   "dependencies": {
     "cheerio": "^1.2.0",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
     "node-cron": "^4.6.0",
     "nodemailer": "^10.0.10",
     "pdf-parse": "^2.4.5",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

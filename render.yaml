@@ -1,0 +1,47 @@
+# Render blueprint: New > Blueprint > pick this repo. Secrets marked sync:false are entered in the dashboard.
+services:
+  - type: web
+    name: psc-helper
+    runtime: node
+    plan: starter # free plan sleeps, which stops the 3-hourly PSC checks; a disk also needs a paid plan
+    region: singapore
+    buildCommand: npm run install:all && npm run build && npm test
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "24"
+      - key: DB_PATH
+        value: /var/data/psc-helper.db
+      - key: BACKUP_DIR
+        value: /var/data/backups
+      - key: APP_URL
+        sync: false # e.g. https://pschelper.in
+      - key: ADMIN_PASSWORD
+        generateValue: true # shown in the dashboard; copy it to log in at /admin
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false # mailto:you@yourdomain
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false # e.g. PSC Helper <alerts@pschelper.in>
+      - key: VITE_CONTACT_EMAIL
+        sync: false # shown on the privacy page; used at build time

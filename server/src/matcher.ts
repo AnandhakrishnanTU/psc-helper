@@ -60,12 +60,27 @@ export function checkEligibility(profile: UserProfile, job: Job): MatchResult {
   const relax = e.relaxationIncluded ? 0 : ageRelaxation(community)
   if (e.dobFrom && e.dobTo) {
     if (profile.dateOfBirth < shiftYears(e.dobFrom, -relax) || profile.dateOfBirth > e.dobTo) return 'no'
-  } else if (e.maxAge) {
+  } else if (e.minAge || e.maxAge) {
     // Age is reckoned as on 1st January of the notification year
-    const year = Number(job.categoryNo.split('/')[1]) || new Date().getFullYear()
+    const year = Number(job.categoryNo.split('/').at(-1)) || new Date().getFullYear()
     const age = ageOn(profile.dateOfBirth, new Date(year, 0, 1))
-    if (age < (e.minAge ?? 0) || age > e.maxAge + relax) return 'no'
+    if (age < (e.minAge ?? 0) || (e.maxAge && age > e.maxAge + relax)) return 'no'
   }
 
   return result
+}
+
+const SUBJECT_REASONS = ['Specific degree subject required', 'Specific branch/trade required']
+
+/**
+ * For jobs needing a specific subject that could not be read reliably: true if the user's
+ * stream is mentioned in the qualification text (or the user gave no stream).
+ * Used to rank search results and to avoid alerting e.g. Commerce graduates about Chemistry posts.
+ */
+export function subjectMatches(profile: UserProfile, job: Job): boolean {
+  const e = job.eligibility
+  if (!e.needsCheck || !e.checkReasons?.some(r => SUBJECT_REASONS.includes(r))) return true
+  const stream = profile.stream?.trim().toLowerCase().replace(/[.\s]+/g, ' ')
+  if (!stream || stream.length < 3) return true
+  return job.qualification.toLowerCase().replace(/[.\s]+/g, ' ').includes(stream)
 }
